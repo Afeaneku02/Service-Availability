@@ -306,6 +306,14 @@ def compute_material_metrics(df_mat: pd.DataFrame, spm_agg: pd.DataFrame) -> pd.
     spm = spm_agg.rename(columns={"PRT NUM": "material", "DIST_CTR": "depot"})
     merged = left.merge(spm, on=["material", "depot"], how="left", suffixes=("", "_spm"))
 
+    # Helper: force Series with proper index
+    def as_series(x):
+        if x is None:
+            return pd.Series(np.nan, index=merged.index)
+        if isinstance(x, pd.Series):
+            return x.reindex(merged.index)
+        return pd.Series(x, index=merged.index)
+
     # Requirement from INV class (primary preferred; fallback SPM INV)
     inv_cls_used = []
     factors = []
@@ -316,54 +324,62 @@ def compute_material_metrics(df_mat: pd.DataFrame, spm_agg: pd.DataFrame) -> pd.
 
     merged["inv_cls_used"] = inv_cls_used
     merged["rec_factor"] = factors
-    cal_iso_num = pd.to_numeric(merged["cal_iso"], errors="coerce").fillna(0.0)
-    merged["required"] = (cal_iso_num * merged["rec_factor"]).clip(lower=0.0)
 
-    # Numeric fields (may be NaN if no SPM row)
-    avail = pd.to_numeric(merged.get("AVAIL"), errors="coerce")
-    wip = pd.to_numeric(merged.get("WIP"), errors="coerce")
-    inhouse = pd.to_numeric(merged.get("INHOUSE"), errors="coerce")
-    intransit = pd.to_numeric(merged.get("INTRANSIT"), errors="coerce")
-    netbo = pd.to_numeric(merged.get("NETBO"), errors="coerce")
-    fcst = pd.to_numeric(merged.get("FCST_1_YR DOS"), errors="coerce")
-    on_order = pd.to_numeric(merged.get("ON_ORDER"), errors="coerce")
-    on_hand_raw = pd.to_numeric(merged.get("ON_HAND"), errors="coerce")  # optional, for reporting only
+    cal_iso_num = pd.to_numeric(as_series(merged.get("cal_iso")), errors="coerce").fillna(0.0)
+    merged["required"] = (cal_iso_num * as_series(merged["rec_factor"])).clip(lower=0.0)
+
+    # Numeric fields -> always Series
+    avail     = pd.to_numeric(as_series(merged.get("AVAIL")), errors="coerce")
+    wip       = pd.to_numeric(as_series(merged.get("WIP")), errors="coerce")
+    inhouse   = pd.to_numeric(as_series(merged.get("INHOUSE")), errors="coerce")
+    intransit = pd.to_numeric(as_series(merged.get("INTRANSIT")), errors="coerce")
+    netbo     = pd.to_numeric(as_series(merged.get("NETBO")), errors="coerce")
+    fcst      = pd.to_numeric(as_series(merged.get("FCST_1_YR DOS")), errors="coerce")
+    on_order  = pd.to_numeric(as_series(merged.get("ON_ORDER")), errors="coerce")
+    on_hand_raw = pd.to_numeric(as_series(merged.get("ON_HAND")), errors="coerce")  # optional
 
     have_spm = avail.notna() & wip.notna() & inhouse.notna() & intransit.notna() & netbo.notna()
 
-    # Coverage model (same as original): On-Hand coverage from AVAIL+WIP+INHOUSE-NETBO
+    # Coverage model
     onhand = ((avail.fillna(0) + wip.fillna(0) + inhouse.fillna(0)) - netbo.fillna(0)).clip(lower=0.0)
     intransit_net = (intransit.fillna(0) - netbo.fillna(0)).clip(lower=0.0)
 
     merged["onhand"] = onhand.where(have_spm, np.nan)
     merged["intransit_net"] = intransit_net.where(have_spm, np.nan)
-    merged["on_order"] = on_order.fillna(0) if on_order is not None else 0
-    merged["on_hand_raw"] = on_hand_raw.fillna(0) if on_hand_raw is not None else 0
+    merged["on_order"] = on_order.fillna(0)
+    merged["on_hand_raw"] = on_hand_raw.fillna(0)
     merged["forecast_val"] = fcst.where(have_spm, np.nan)
 
-    # Flags
-    f_flag = (merged["forecast_val"] > 0)
-    no_fyf = (merged["forecast_val"] < 0) if STRICT_NO_FYF_LT_ZERO else (merged["forecast_val"] <= 0)
-    merged["forecasted"] = f_flag.fillna(False)
-    merged["no_fyf"] = no_fyf.fillna(False)
+    # Flags (always Series)
+    merged["forecasted"] = (merged["forecast_val"] > 0).fillna(False)
+    if STRICT_NO_FYF_LT_ZERO:
+        merged["no_fyf"] = (merged["forecast_val"] < 0).fillna(False)
+    else:
+        merged["no_fyf"] = (merged["forecast_val"] <= 0).fillna(False)
 
-    # Coverage decisions (priority: On-Hand -> In-Transit -> ON_ORDER -> Not stocked)
+    # Coverage decisions
     covers_onhand = (merged["onhand"] >= merged["required"]) & have_spm
     covers_transit = (merged["intransit_net"] >= merged["required"]) & have_spm
     has_on_order = (merged["on_order"] > 0) & have_spm
 
-    merged["stocked_by"] = np.where(covers_onhand, "On-Hand",
-                             np.where(covers_transit, "In-Transit",
-                             np.where(~have_spm, None, None)))
+    merged["stocked_by"] = np.where(
+        covers_onhand, "On-Hand",
+        np.where(covers_transit, "In-Transit", None)
+    )
 
-    merged["status"] = np.where(~have_spm, "Review SPM (missing row)",
-                         np.where(covers_onhand,
-                                  np.where(merged["forecasted"], "Stocked&Forecasted", "Stocked No FYF"),
-                                  np.where(covers_transit, "In-Transit",
-                                           np.where(has_on_order, "ON_ORDER", "Not stocked"))))
+    merged["status"] = np.where(
+        ~have_spm, "Review SPM (missing row)",
+        np.where(
+            covers_onhand,
+            np.where(merged["forecasted"], "Stocked&Forecasted", "Stocked No FYF"),
+            np.where(covers_transit, "In-Transit",
+                     np.where(has_on_order, "ON_ORDER", "Not stocked"))
+        )
+    )
 
     # Notes
     date_str = todays_date()
+
     def mk_note(row):
         if not have_spm.loc[row.name]:
             return f"{date_str}: {row['depot']}: {row['material']} SPM missing row"
@@ -384,6 +400,7 @@ def compute_material_metrics(df_mat: pd.DataFrame, spm_agg: pd.DataFrame) -> pd.
 
     merged["note"] = merged.apply(mk_note, axis=1)
     return merged
+
 
 def evaluate_rows_vectorized(primary_df: pd.DataFrame, spm_agg: pd.DataFrame) -> pd.DataFrame:
     base = primary_df.copy()
@@ -675,3 +692,4 @@ def main():
 if __name__ == "__main__":
 
     main()
+
