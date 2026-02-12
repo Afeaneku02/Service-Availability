@@ -216,7 +216,7 @@ def backfill_calc_fields(primary_df: pd.DataFrame, mcc_map: dict[int, float], ro
             cf_fill.append(_round_whole(raw, rounding_method, raw=raw))
         else:
             cf_fill.append(cur)
-    df["Calc Forecast"] = pd.to_numeric(cf_fill, errors="coerce").astype("Int64")
+    df["Calc Forecast"] = pd.to_numeric(cf_fill, errors="coerce").fillna(0).round(0).astype("Int64")
 
     # Cal ISO from CF
     final_cf = df["Calc Forecast"].astype(float)
@@ -228,7 +228,7 @@ def backfill_calc_fields(primary_df: pd.DataFrame, mcc_map: dict[int, float], ro
             ci_fill.append(_round_whole(raw, rounding_method, raw=raw))
         else:
             ci_fill.append(cur)
-    df["Cal ISO"] = pd.to_numeric(ci_fill, errors="coerce").astype("Int64")
+    df["Cal ISO"] = pd.to_numeric(ci_fill, errors="coerce").fillna(0).round(0).astype("Int64")
 
     # Notes for rows changed
     notes = []
@@ -673,4 +673,5 @@ def main():
             st.error(f"Error: {e}")
 
 if __name__ == "__main__":
+
     main()
