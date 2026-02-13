@@ -184,10 +184,7 @@ def normalize_columns(df: pd.DataFrame, is_primary: bool) -> pd.DataFrame:
 def backfill_calc_fields(primary_df: pd.DataFrame, mcc_map: dict[int, float], rounding_method: str = "round") -> pd.DataFrame:
     df = primary_df.copy()
 
-    # Ensure canonical columns exist after normalization
-    has_mcc = "MCC" in df.columns
-    if not has_mcc:
-        # Nothing to do
+    if "MCC" not in df.columns:
         return df
 
     if "Calc Forecast" not in df.columns:
@@ -216,7 +213,10 @@ def backfill_calc_fields(primary_df: pd.DataFrame, mcc_map: dict[int, float], ro
             cf_fill.append(_round_whole(raw, rounding_method, raw=raw))
         else:
             cf_fill.append(cur)
-    df["Calc Forecast"] = pd.to_numeric(cf_fill, errors="coerce").fillna(0).round(0).astype("Int64")
+
+    # ✅ make Series so fillna works
+    cf_series = pd.to_numeric(pd.Series(cf_fill, index=df.index), errors="coerce")
+    df["Calc Forecast"] = cf_series.fillna(0).round(0).astype("Int64")
 
     # Cal ISO from CF
     final_cf = df["Calc Forecast"].astype(float)
@@ -228,7 +228,10 @@ def backfill_calc_fields(primary_df: pd.DataFrame, mcc_map: dict[int, float], ro
             ci_fill.append(_round_whole(raw, rounding_method, raw=raw))
         else:
             ci_fill.append(cur)
-    df["Cal ISO"] = pd.to_numeric(ci_fill, errors="coerce").fillna(0).round(0).astype("Int64")
+
+    # ✅ make Series so fillna works
+    ci_series = pd.to_numeric(pd.Series(ci_fill, index=df.index), errors="coerce")
+    df["Cal ISO"] = ci_series.fillna(0).round(0).astype("Int64")
 
     # Notes for rows changed
     notes = []
@@ -692,4 +695,5 @@ def main():
 if __name__ == "__main__":
 
     main()
+
 
